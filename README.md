@@ -5,6 +5,7 @@ A production-style AWS network built completely from scratch. A centralized **Hu
 No SSH keys. No bastion hosts. All administration performed through **AWS Systems Manager Session Manager (SSM)**.
 
 ---
+![AWS-Transit-Gateway-Hub-and-Spoke-Architecture](SCreenshots/aws_architecture.png)
 
 ## Architecture
 
