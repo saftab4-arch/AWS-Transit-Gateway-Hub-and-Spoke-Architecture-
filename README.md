@@ -1,543 +1,309 @@
-Project Overview
+# AWS Centralized Edge — Hub-and-Spoke Architecture
 
-This project demonstrates a production-style AWS network architecture built completely from scratch. The environment consists of a centralized Hub VPC connected to multiple Spoke VPCs through AWS Transit Gateway. Application servers remain completely private while traffic enters through an internet-facing Application Load Balancer protected by Cloudflare and HTTPS certificates from ACM.
+A production-style AWS network built completely from scratch. A centralized **Hub VPC** connects to multiple **Spoke VPCs** through **AWS Transit Gateway**. Application servers stay fully private while traffic enters through an internet-facing **Application Load Balancer** protected by **Cloudflare** and **ACM** HTTPS certificates.
 
-No SSH keys or bastion hosts were used. All administration was performed securely through Systems Manager Session Manager (SSM).
+No SSH keys. No bastion hosts. All administration performed through **AWS Systems Manager Session Manager (SSM)**.
 
-Architecture
+---
+
+## Architecture
+
+```
                     Internet
                         │
-                HTTPS (443)
+                  HTTPS (443)
                         │
                  Cloudflare Proxy
                         │
-                 app.basitcloudlab.com
+                app.basitcloudlab.com
                         │
-                 Route53 Hosted Zone
+                 Route 53 Hosted Zone
                         │
                  ACM SSL Certificate
                         │
-                Application Load Balancer
+              Application Load Balancer
                 Hub VPC (10.0.0.0/16)
                         │
                 ───────────────────
                         │
                   Transit Gateway
-                   (Central Router)
+                  (Central Router)
                    /            \
                   /              \
                  /                \
-      Spoke1 VPC                  Spoke2 VPC
-      10.1.0.0/16                 10.2.0.0/16
-            │                           │
-      Private EC2                  Private EC2
-      Nginx Server                 Nginx Server
-Services Used
-Amazon VPC
-Transit Gateway
-EC2
-Systems Manager (SSM)
-Interface VPC Endpoints
-IAM Roles
-NAT Gateway
-Application Load Balancer
-Target Groups
-ACM
-Route53
-Cloudflare
-Security Groups
-Route Tables
-Nginx
-Network Layout
-Hub VPC
+        Spoke1 VPC                Spoke2 VPC
+        10.1.0.0/16               10.2.0.0/16
+            │                          │
+        Private EC2                Private EC2
+        Nginx Server               Nginx Server
+```
 
-CIDR:
+---
 
-10.0.0.0/16
+## Services Used
 
-Contains:
+Amazon VPC · Transit Gateway · EC2 · Systems Manager (SSM) · Interface VPC Endpoints · IAM Roles · NAT Gateway · Application Load Balancer · Target Groups · ACM · Route 53 · Cloudflare · Security Groups · Route Tables · Nginx
 
-Public ALB subnet A
-Public ALB subnet B
-NAT Gateway subnet
-TGW attachment subnet
-Spoke1 VPC
+---
 
-CIDR:
+## Network Layout
 
-10.1.0.0/16
+### Hub VPC — `10.0.0.0/16`
 
-Contains:
+- Public ALB subnet A
+- Public ALB subnet B
+- NAT Gateway subnet
+- TGW attachment subnet
 
-Private Application subnet
-TGW subnet
-SSM Interface Endpoints
-Private EC2
-Spoke2 VPC
+### Spoke1 VPC — `10.1.0.0/16`
 
-CIDR:
+- Private application subnet
+- TGW subnet
+- SSM interface endpoints
+- Private EC2
 
-10.2.0.0/16
+### Spoke2 VPC — `10.2.0.0/16`
 
-Contains:
+- Private application subnet
+- TGW subnet
+- SSM interface endpoints
+- Private EC2
 
-Private Application subnet
-TGW subnet
-SSM Interface Endpoints
-Private EC2
-Security Groups
-Hub-ALB-SG
+---
 
-Inbound:
+## Security Groups
 
-HTTP 80     0.0.0.0/0
-HTTPS 443   0.0.0.0/0
+### Hub-ALB-SG
 
-Outbound:
+| Direction | Protocol | Port | Source/Dest |
+|-----------|----------|------|-------------|
+| Inbound   | HTTP     | 80   | `0.0.0.0/0` |
+| Inbound   | HTTPS    | 443  | `0.0.0.0/0` |
+| Outbound  | All      | All  | All         |
 
-All traffic
-Spoke1-App-SG
+### Spoke1-App-SG / Spoke2-App-SG
 
-Inbound:
+| Direction | Protocol | Port | Source        |
+|-----------|----------|------|---------------|
+| Inbound   | TCP      | 80   | `10.0.0.0/24` |
+| Inbound   | TCP      | 80   | `10.0.1.0/24` |
+| Outbound  | All      | All  | All           |
 
-TCP 80 from 10.0.0.0/24
-TCP 80 from 10.0.1.0/24
+> Security-group references don't cross a Transit Gateway. The spoke App-SGs allow the **Hub ALB subnet CIDRs by range** — not an `sg-` reference.
 
-Outbound:
+---
 
-All traffic
-Spoke2-App-SG
+## Transit Gateway Configuration
 
-Inbound:
+**Central Transit Gateway**, with three attachments: Hub VPC, Spoke1 VPC, Spoke2 VPC.
 
-TCP 80 from 10.0.0.0/24
-TCP 80 from 10.0.1.0/24
+### TGW Route Table
 
-Outbound:
+| Destination   | Target            |
+|---------------|-------------------|
+| `10.0.0.0/16` | Hub attachment    |
+| `10.1.0.0/16` | Spoke1 attachment |
+| `10.2.0.0/16` | Spoke2 attachment |
+| `0.0.0.0/0`   | Hub attachment    |
 
-All traffic
-Transit Gateway Configuration
+**Why `0.0.0.0/0` points to the Hub:** spoke VPCs have no Internet Gateway, so internet access is centralized through the Hub.
 
-Created:
+```
+Private EC2 → Spoke Route Table → Transit Gateway → Hub Attachment
+→ Hub TGW Route Table → NAT Gateway → Internet
+```
 
-Central Transit Gateway
+This provides centralized egress, better security, reduced NAT cost, and simpler management.
 
-Attached:
+---
 
-Hub VPC
-Spoke1 VPC
-Spoke2 VPC
-TGW Route Table
+## VPC Route Tables
 
-Routes:
+### Hub-TGW-RT
 
-10.0.0.0/16 → Hub Attachment
-10.1.0.0/16 → Spoke1 Attachment
-10.2.0.0/16 → Spoke2 Attachment
-0.0.0.0/0 → Hub Attachment
-Why 0.0.0.0/0 Points to Hub
+| Destination   | Target      |
+|---------------|-------------|
+| `10.0.0.0/16` | local       |
+| `10.1.0.0/16` | TGW         |
+| `10.2.0.0/16` | TGW         |
+| `0.0.0.0/0`   | NAT Gateway |
 
-Spoke VPCs have no Internet Gateway.
+### Spoke1 Application Route Table
 
-Internet access is centralized.
+| Destination   | Target          |
+|---------------|-----------------|
+| `10.1.0.0/16` | local           |
+| `0.0.0.0/0`   | Transit Gateway |
 
-Traffic flow:
+### Spoke2 Application Route Table
 
-Private EC2
-      ↓
-Spoke Route Table
-      ↓
-Transit Gateway
-      ↓
-Hub Attachment
-      ↓
-Hub TGW Route Table
-      ↓
-NAT Gateway
-      ↓
-Internet
+| Destination   | Target          |
+|---------------|-----------------|
+| `10.2.0.0/16` | local           |
+| `0.0.0.0/0`   | Transit Gateway |
 
-This provides:
+---
 
-Centralized egress
-Better security
-Reduced NAT costs
-Simplified management
-Hub Route Table
+## Systems Manager Architecture
 
-Hub-TGW-RT
+No SSH. No bastion host. Administration via **AWS Systems Manager Session Manager**.
 
-10.0.0.0/16 → local
-10.1.0.0/16 → TGW
-10.2.0.0/16 → TGW
-0.0.0.0/0 → NAT Gateway
-Spoke1 Application Route Table
-10.1.0.0/16 → local
-0.0.0.0/0 → Transit Gateway
-Spoke2 Application Route Table
-10.2.0.0/16 → local
-0.0.0.0/0 → Transit Gateway
-Systems Manager Architecture
-
-No SSH was used.
-
-No bastion host was deployed.
-
-Administration was performed using:
-
-AWS Systems Manager Session Manager
-IAM Role
+### IAM Role — `EC2-SSM-Role`
 
 Attached to both EC2 instances:
 
-AmazonSSMManagedInstanceCore
+- `AmazonSSMManagedInstanceCore`
 
-Role:
+### Interface Endpoints
 
-EC2-SSM-Role
-Interface Endpoints
+Each spoke VPC contains three interface endpoints (**6 total**):
 
-Each spoke VPC contains:
+| Service     | Endpoint                                |
+|-------------|-----------------------------------------|
+| SSM         | `com.amazonaws.us-east-1.ssm`           |
+| SSM Messages| `com.amazonaws.us-east-1.ssmmessages`   |
+| EC2 Messages| `com.amazonaws.us-east-1.ec2messages`   |
 
-SSM
-com.amazonaws.us-east-1.ssm
-SSM Messages
-com.amazonaws.us-east-1.ssmmessages
-EC2 Messages
-com.amazonaws.us-east-1.ec2messages
+### IMDSv2 Configuration
 
-Total:
+**Problem:** SSM agent was offline — unable to acquire credentials.
 
-6 Interface Endpoints
-IMDSv2 Configuration
+**Solution:** modified instance metadata options:
 
-Initially SSM was offline.
+- IMDSv2 **Required**
+- HTTP PUT response hop limit = **2**
 
-Problem:
+SSM came online immediately.
 
-SSM Agent unable to acquire credentials
+---
 
-Solution:
+## NAT Gateway
 
-Modified Metadata Options:
+Deployed in the Hub public subnet. Allows private EC2 instances to `yum update`, install nginx, and download packages **without** exposing servers to the internet.
 
-IMDSv2 Required
+---
 
-HTTP PUT response hop limit = 2
+## Installing Nginx
 
-SSM immediately became online.
+Connected via SSM:
 
-NAT Gateway
-
-Deployed inside Hub Public Subnet.
-
-Purpose:
-
-Allow private EC2 instances to:
-
-yum update
-install nginx
-download packages
-
-Without exposing servers to the Internet.
-
-Installing Nginx
-
-Connected using SSM.
-
-Update system:
-
+```bash
 sudo yum update -y
-
-Install nginx:
-
 sudo yum install nginx -y
-
-Enable:
-
 sudo systemctl enable nginx
-
-Start:
-
 sudo systemctl start nginx
-Spoke1 Web Page
+```
+
+**Spoke1 web page:**
+
+```bash
 echo "Spoke1 Application Server" | sudo tee /usr/share/nginx/html/index.html
-Spoke2 Web Page
+```
+
+**Spoke2 web page:**
+
+```bash
 echo "Spoke2 Application Server" | sudo tee /usr/share/nginx/html/index.html
-Application Load Balancer
+```
 
-Internet Facing
+---
 
-Across:
+## Application Load Balancer
 
-AZ A
-AZ B
+Internet-facing, across AZ A and AZ B. Listener on **80**, later added **443**.
 
-Listener:
+### Target Group
 
-80
+- **Type:** IP
+- **Registered targets:** `10.1.1.192`, `10.2.1.134`
+- **Health check:** HTTP `/` on port 80
 
-Later added:
+**Troubleshooting — targets unhealthy / request timed out:** security-group rules were missing. Fix: allowed TCP 80 from `10.0.0.0/24` and `10.0.1.0/24`. Targets became healthy.
 
-443
-Target Group
+---
 
-Type:
+## ACM Certificate
 
-IP
+- **Requested for:** `app.basitcloudlab.com`
+- **Validation:** DNS
+- **Status:** Issued
 
-Registered targets:
+---
 
-10.1.1.192
-10.2.1.134
+## Cloudflare Configuration
 
-Health check:
+- **Record:** CNAME `app.basitcloudlab.com` → `central-edge-alb-xxxx.us-east-1.elb.amazonaws.com`
+- **Proxy:** Enabled
+- **SSL mode:** Full (Strict)
+- **Always HTTPS:** Enabled
 
-HTTP /
-Port 80
-Target Group Troubleshooting
+### HTTPS Traffic Flow
 
-Initial State:
+```
+Browser → HTTPS → Cloudflare → HTTPS → ALB → HTTP → Transit Gateway → Private EC2
+```
 
-Unhealthy
-Request Timed Out
+---
 
-Problem:
+## Route 53
 
-Security Group rules missing.
+- **Hosted zone:** `basitcloudlab.com`
+- **Record:** A Alias
+- **Purpose:** ACM DNS validation and future AWS DNS integration. Actual client traffic enters through Cloudflare.
 
-Solution:
+---
 
-Allowed:
+## Validation
 
-TCP 80
-Source:
-10.0.0.0/24
-10.0.1.0/24
+| Check          | Command                  | Result                                       |
+|----------------|--------------------------|----------------------------------------------|
+| SSM            | `whoami`                 | `ssm-user`                                   |
+| OS             | `cat /etc/os-release`    | Amazon Linux 2023                            |
+| Internet       | `curl google.com`        | Successful                                   |
+| Nginx          | `systemctl status nginx` | Active: running                              |
+| ALB            | open `http://ALB-DNS`    | Alternates Spoke1 / Spoke2 Application Server|
+| HTTPS          | open `https://app.basitcloudlab.com` | Successful                       |
 
-Targets became healthy.
+---
 
-ACM Certificate
+## Troubleshooting Summary
 
-Requested:
+| Issue                | Cause                              | Fix                                                      |
+|----------------------|------------------------------------|---------------------------------------------------------|
+| SSM offline          | Missing credentials                | IAM role + SSM interface endpoints + IMDSv2 hop limit 2  |
+| `yum update` hanging | No internet access                 | Centralized NAT GW via `0.0.0.0/0` → TGW → Hub → NAT     |
+| Target group unhealthy | SGs blocked port 80              | Added HTTP inbound from Hub ALB subnets                  |
+| ACM cert pending     | DNS validation record missing      | Added ACM CNAME inside Cloudflare                        |
+| Cannot delete ENI    | TGW attachment dependency          | Delete TGW attachment **before** VPC                     |
 
-app.basitcloudlab.com
+---
 
-Validation:
+## Skills Demonstrated
 
-DNS
+VPC design · Transit Gateway · hub-and-spoke architecture · centralized internet egress · NAT Gateway · route tables · security groups · IAM · SSM Session Manager · interface endpoints · Application Load Balancer · target groups · health checks · ACM · Route 53 · Cloudflare · HTTPS · DNS · Nginx · high availability · multi-VPC networking · troubleshooting
 
-Certificate status:
+---
 
-Issued
-Cloudflare Configuration
+## Resume Description
 
-Created:
+> Designed and implemented a production-style AWS hub-and-spoke architecture using Transit Gateway, centralized NAT Gateway egress, private EC2 instances, Systems Manager Session Manager, interface VPC endpoints, Application Load Balancer, ACM certificates, Route 53, and Cloudflare. Built secure end-to-end HTTPS connectivity without public servers or SSH access and validated highly available application delivery across multiple isolated VPCs.
 
-CNAME
-app.basitcloudlab.com
+---
 
-Points to:
+## Future Improvements
 
-central-edge-alb-xxxx.us-east-1.elb.amazonaws.com
+Auto Scaling Groups · multi-region deployment · Route 53 failover routing · AWS WAF · CloudFront · Terraform automation · CI/CD pipeline · ECS/Fargate migration · Kubernetes integration
 
-Proxy:
+---
 
-Enabled
-
-SSL Mode:
-
-Full (Strict)
-
-Always HTTPS:
-
-Enabled
-HTTPS Traffic Flow
-Browser
-     │
-HTTPS
-     │
-Cloudflare
-     │
-HTTPS
-     │
-ALB
-     │
-HTTP
-     │
-Transit Gateway
-     │
-Private EC2
-Route53
-
-Hosted Zone:
-
-basitcloudlab.com
-
-Created:
-
-A Alias
-
-Purpose:
-
-ACM DNS validation and future AWS DNS integration.
-
-Actual client traffic enters through Cloudflare.
-
-Validation
-SSM
-whoami
-
-Output:
-
-ssm-user
-OS Verification
-cat /etc/os-release
-
-Output:
-
-Amazon Linux 2023
-Verify Internet
-curl google.com
-
-Successful
-
-Verify Nginx
-systemctl status nginx
-
-Active:
-
-running
-Verify ALB
-
-Open:
-
-http://ALB-DNS
-
-Refresh repeatedly.
-
-Responses alternate:
-
-Spoke1 Application Server
-
-and
-
-Spoke2 Application Server
-Verify HTTPS
-
-Open:
-
-https://app.basitcloudlab.com
-
-Successful.
-
-Troubleshooting
-SSM Offline
-
-Cause:
-
-Missing credentials.
-
-Fix:
-
-IAM Role
-+
-SSM Interface Endpoints
-+
-IMDSv2 hop limit = 2
-yum update Hanging
-
-Cause:
-
-No Internet access.
-
-Fix:
-
-Centralized NAT Gateway
-
-and
-
-0.0.0.0/0
-→ Transit Gateway
-→ Hub
-→ NAT Gateway
-Target Group Unhealthy
-
-Cause:
-
-Security Groups blocked port 80.
-
-Fix:
-
-Added HTTP inbound from Hub ALB subnets.
-
-ACM Certificate Pending
-
-Cause:
-
-DNS validation record missing.
-
-Fix:
-
-Added ACM CNAME inside Cloudflare.
-
-Cannot Delete ENI
-
-Cause:
-
-Transit Gateway attachment dependency.
-
-Fix:
-
-Delete:
-
-TGW Attachment
-before
-VPC
-Skills Demonstrated
-VPC Design
-Transit Gateway
-Hub-and-Spoke Architecture
-Centralized Internet Egress
-NAT Gateway
-Route Tables
-Security Groups
-IAM
-SSM Session Manager
-Interface Endpoints
-Application Load Balancer
-Target Groups
-Health Checks
-ACM
-Route53
-Cloudflare
-HTTPS
-DNS
-Nginx
-High Availability
-Multi-VPC Networking
-Troubleshooting
-Resume Description
-
-Designed and implemented a production-style AWS hub-and-spoke architecture using Transit Gateway, centralized NAT Gateway egress, private EC2 instances, Systems Manager Session Manager, interface VPC endpoints, Application Load Balancer, ACM certificates, Route53, and Cloudflare. Built secure end-to-end HTTPS connectivity without public servers or SSH access and validated highly available application delivery across multiple isolated VPCs.
-
-Future Improvements
-Auto Scaling Groups
-Multi-Region Deployment
-Route53 Failover Routing
-AWS WAF
-CloudFront
-Terraform Automation
-CI/CD Pipeline
-ECS/Fargate Migration
-Kubernetes Integration
-
-Project Type: Production-Style AWS Networking Architecture
-Difficulty: Advanced
-Built From Scratch: Yes
-Public EC2 Instances: None
-SSH Used: No
-Administration Method: AWS Systems Manager Session Manager
-Load Balancing: Application Load Balancer
-SSL: ACM + Cloudflare Full Strict HTTPS
-High Availability: Multi-AZ ALB + Multi-VPC Architecture
+| | |
+|---|---|
+| **Project type** | Production-style AWS networking architecture |
+| **Difficulty** | Advanced |
+| **Built from scratch** | Yes |
+| **Public EC2 instances** | None |
+| **SSH used** | No |
+| **Administration method** | AWS Systems Manager Session Manager |
+| **Load balancing** | Application Load Balancer |
+| **SSL** | ACM + Cloudflare Full Strict HTTPS |
+| **High availability** | Multi-AZ ALB + multi-VPC architecture |
